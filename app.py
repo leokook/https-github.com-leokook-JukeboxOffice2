@@ -1,6 +1,6 @@
 """
 ============================================================
- JUKEBOX DJ — Web App en Streamlit + Spotify + Google Chat
+ JUKEBOX DJ — Streamlit + Spotify + Google Chat
 ============================================================
 
 Funciones:
@@ -8,6 +8,8 @@ Funciones:
   - Anuncio de cada pedido en Google Chat (webhook entrante)
   - Historial de pedidos visible en la app
   - Límite de pedidos: 7 por persona por hora
+
+Interfaz en inglés; comentarios en español para mantenimiento.
 
 Secrets requeridos (Streamlit Cloud > Settings > Secrets):
 
@@ -18,8 +20,7 @@ Secrets requeridos (Streamlit Cloud > Settings > Secrets):
     APP_PASSWORD          = "..."                              # opcional
 
 Nota: el historial y los contadores viven en la memoria de la app.
-Si Streamlit Cloud reinicia o duerme la app, se reinician. Para
-persistencia real se puede conectar Supabase (ver comentario al final).
+Si Streamlit Cloud reinicia o duerme la app, se reinician.
 """
 
 import threading
@@ -52,8 +53,8 @@ HISTORY_MAX_SHOWN = 25
 def get_store() -> dict:
     return {
         "lock": threading.Lock(),
-        "history": [],        # lista de pedidos: dicts con ts, requester, track, artists, url
-        "requests_by_user": {},  # nombre normalizado -> [timestamps de pedidos]
+        "history": [],           # pedidos: dicts con ts, requester, track, artists, url
+        "requests_by_user": {},  # nombre normalizado -> [timestamps]
     }
 
 
@@ -86,7 +87,7 @@ def register_request(requester: str, track: dict) -> None:
     key = normalize_name(requester)
     entry = {
         "ts": now,
-        "when": datetime.now(TZ).strftime("%H:%M"),
+        "when": datetime.now(TZ).strftime("%I:%M %p").lstrip("0"),
         "requester": requester.strip(),
         "track": track["name"],
         "artists": ", ".join(a["name"] for a in track["artists"]),
@@ -116,7 +117,12 @@ def get_access_token() -> str:
         timeout=15,
     )
     if resp.status_code != 200:
-        st.error(f"No pude refrescar el token de Spotify ({resp.status_code}): {resp.text}")
+        st.error(
+            "Couldn't connect to Spotify. Please let the DJ know — the account "
+            f"may need to be reconnected. (Error {resp.status_code})"
+        )
+        with st.expander("Technical details"):
+            st.code(resp.text)
         st.stop()
 
     data = resp.json()
@@ -138,7 +144,7 @@ def spotify(method: str, path: str, **kwargs) -> requests.Response:
 def search_tracks(query: str, limit: int = 5) -> list:
     resp = spotify("GET", "/search", params={"q": query, "type": "track", "limit": limit})
     if resp.status_code != 200:
-        st.error(f"Error buscando en Spotify ({resp.status_code}).")
+        st.error(f"Spotify search failed ({resp.status_code}). Try again in a moment.")
         return []
     return resp.json()["tracks"]["items"]
 
@@ -155,11 +161,12 @@ def get_now_playing() -> dict | None:
 
 
 def announce_in_chat(track: dict, requester: str) -> None:
+    """Publica el pedido en el espacio de Google Chat (si el webhook está configurado)."""
     webhook = st.secrets.get("CHAT_WEBHOOK_URL")
     if not webhook:
         return
     artists = ", ".join(a["name"] for a in track["artists"])
-    text = f"🎶 *{track['name']}* — {artists}\nAgregada a la cola por *{requester}* 🎧"
+    text = f"🎶 *{track['name']}* — {artists}\nQueued up by *{requester}* 🎧"
     try:
         requests.post(webhook, json={"text": text}, timeout=10)
     except requests.RequestException:
@@ -177,13 +184,13 @@ def check_password() -> bool:
         return True
 
     st.title("🎧 Jukebox DJ")
-    pwd = st.text_input("Contraseña de la oficina", type="password")
+    pwd = st.text_input("Office password", type="password")
     if pwd:
         if pwd == expected:
             st.session_state["authed"] = True
             st.rerun()
         else:
-            st.error("Contraseña incorrecta.")
+            st.error("Incorrect password.")
     return False
 
 
@@ -195,9 +202,12 @@ if not check_password():
 # Interfaz principal
 # ------------------------------------------------------------
 st.title("🎧 Jukebox DJ")
-st.caption(f"Busca una canción y agrégala a la cola de la oficina. Máximo {MAX_REQUESTS_PER_HOUR} pedidos por persona por hora.")
+st.caption(
+    f"Search for a song and add it to the office queue. "
+    f"Limit: {MAX_REQUESTS_PER_HOUR} requests per person per hour."
+)
 
-# --- Ahora suena -------------------------------------------------
+# --- Now playing -------------------------------------------------
 np = get_now_playing()
 if np and np.get("item"):
     item = np["item"]
@@ -208,33 +218,33 @@ if np and np.get("item"):
         if images:
             st.image(images[-1]["url"], width=64)
     with cols[1]:
-        st.markdown(f"**Sonando ahora:** {item['name']} — {artists}")
+        st.markdown(f"**Now playing:** {item['name']} — {artists}")
     st.divider()
 else:
-    st.info("🔇 No hay nada sonando ahora mismo. Los pedidos necesitan que Spotify esté reproduciendo.")
+    st.info("🔇 Nothing is playing right now. Spotify needs to be playing for requests to work.")
 
-# --- Identificación del solicitante ------------------------------
+# --- Requester ---------------------------------------------------
 requester = st.text_input(
-    "Tu nombre (aparecerá en el anuncio del chat)",
+    "Your name (shown in the chat announcement)",
     value=st.session_state.get("requester", ""),
-    placeholder="Ej: Andrea",
+    placeholder="e.g. Andrea",
 )
 if requester:
     st.session_state["requester"] = requester.strip()
 
-# Indicador de cupo restante
+# Cupo restante
 if st.session_state.get("requester"):
     _, used, _ = check_rate_limit(st.session_state["requester"])
     remaining = MAX_REQUESTS_PER_HOUR - used
-    st.caption(f"🎟️ Te quedan **{remaining}** de {MAX_REQUESTS_PER_HOUR} pedidos esta hora.")
+    st.caption(f"🎟️ You have **{remaining}** of {MAX_REQUESTS_PER_HOUR} requests left this hour.")
 
-# --- Búsqueda -----------------------------------------------------
-query = st.text_input("¿Qué canción quieres escuchar?", placeholder="Ej: Mr. Brightside The Killers")
+# --- Search ------------------------------------------------------
+query = st.text_input("What do you want to hear?", placeholder="e.g. Mr. Brightside The Killers")
 
 if query:
     results = search_tracks(query)
     if not results:
-        st.warning(f'😕 No encontré nada para "{query}". Intenta con canción + artista.')
+        st.warning(f'😕 No results for "{query}". Try adding the artist name.')
 
     for track in results:
         artists = ", ".join(a["name"] for a in track["artists"])
@@ -252,58 +262,58 @@ if query:
                 st.markdown(f"**{track['name']}**")
                 st.caption(f"{artists} · {album} · {duration}")
             with c3:
-                if st.button("➕ A la cola", key=f"queue_{track['id']}", use_container_width=True):
+                if st.button("➕ Queue it", key=f"queue_{track['id']}", use_container_width=True):
                     name = st.session_state.get("requester", "")
                     if not name:
-                        st.warning("Pon tu nombre arriba primero 🙂")
+                        st.warning("Enter your name above first 🙂")
                     else:
                         allowed, used, wait = check_rate_limit(name)
                         if not allowed:
                             mins = max(1, wait // 60)
                             st.error(
-                                f"🎟️ Ya usaste tus {MAX_REQUESTS_PER_HOUR} pedidos de esta hora. "
-                                f"Se libera un cupo en ~{mins} min."
+                                f"🎟️ You've used all {MAX_REQUESTS_PER_HOUR} requests for this hour. "
+                                f"Another slot opens in about {mins} min."
                             )
                         else:
                             resp = add_to_queue(track["uri"])
                             if resp.status_code in (200, 202, 204):
                                 register_request(name, track)
-                                st.success(f"🎶 ¡*{track['name']}* agregada a la cola!")
+                                st.success(f"🎶 *{track['name']}* added to the queue!")
                                 announce_in_chat(track, name)
                                 st.balloons()
                             elif resp.status_code == 404:
                                 st.error(
-                                    "⏸️ No hay ningún dispositivo reproduciendo. "
-                                    "Pídele al DJ que le dé play a Spotify."
+                                    "⏸️ No active playback device. "
+                                    "Ask the DJ to hit play on Spotify and try again."
                                 )
                             elif resp.status_code == 403:
-                                st.error("🔒 Spotify rechazó la petición (403). ¿La cuenta sigue siendo Premium?")
+                                st.error("🔒 Spotify rejected the request (403). Is the account still Premium?")
                             else:
                                 st.error(f"⚠️ Error {resp.status_code}: {resp.text}")
 
-# --- Historial de pedidos ----------------------------------------
+# --- Request history ---------------------------------------------
 st.divider()
 history = get_store()["history"]
-with st.expander(f"📜 Historial de pedidos ({len(history)})", expanded=False):
+with st.expander(f"📜 Request history ({len(history)})", expanded=False):
     if not history:
-        st.caption("Todavía no hay pedidos. ¡Sé el primero! 🎤")
+        st.caption("No requests yet. Be the first! 🎤")
     else:
         for h in history[:HISTORY_MAX_SHOWN]:
             st.markdown(
                 f"`{h['when']}` &nbsp; [{h['track']}]({h['url']}) — {h['artists']} "
-                f"&nbsp;·&nbsp; pedida por **{h['requester']}**"
+                f"&nbsp;·&nbsp; requested by **{h['requester']}**"
             )
         if len(history) > HISTORY_MAX_SHOWN:
-            st.caption(f"… y {len(history) - HISTORY_MAX_SHOWN} más.")
+            st.caption(f"… and {len(history) - HISTORY_MAX_SHOWN} more.")
 
-st.caption("Jukebox DJ · hecho con Streamlit + Spotify API · los pedidos suenan en la cuenta del DJ 🎛️")
+st.caption("Jukebox DJ · built with Streamlit + the Spotify API · requests play on the DJ's account 🎛️")
 
 # ------------------------------------------------------------
 # NOTA SOBRE PERSISTENCIA:
 # El historial y los contadores viven en memoria (st.cache_resource),
 # compartidos entre todos los usuarios mientras la app esté despierta.
-# Si la app se reinicia o duerme, se reinician. Si algún día quieres
-# persistencia real, la mejora natural es una tabla en Supabase
-# (requests: ts, requester, track, artists, url) y reemplazar
-# register_request/check_rate_limit por consultas a esa tabla.
+# Si la app se reinicia o duerme, se reinician. Para persistencia real,
+# la mejora natural es una tabla en Supabase (requests: ts, requester,
+# track, artists, url) y reemplazar register_request/check_rate_limit
+# por consultas a esa tabla.
 # ------------------------------------------------------------
