@@ -40,7 +40,7 @@ SPOTIFY_API = "https://api.spotify.com/v1"
 SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token"
 TZ = ZoneInfo("America/Toronto")
 
-MAX_REQUESTS_PER_HOUR = 7
+MAX_REQUESTS_PER_HOUR = 15
 RATE_WINDOW_SECONDS = 3600
 HISTORY_MAX_SHOWN = 25
 
